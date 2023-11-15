@@ -1,13 +1,12 @@
 import argparse
+import subprocess
 import os
 import platform
-import subprocess
-
 import pkg_resources
-
-from ..terminal_interface.conversation_navigator import conversation_navigator
-from ..utils.display_markdown_message import display_markdown_message
+import ooba
+import appdirs
 from ..utils.get_config import get_config_path
+from ..terminal_interface.conversation_navigator import conversation_navigator
 
 arguments = [
     {
@@ -16,16 +15,11 @@ arguments = [
         "help_text": "prompt / custom instructions for the language model",
         "type": str,
     },
-    {
-        "name": "local",
-        "nickname": "l",
-        "help_text": "experimentally run the language model locally (via LM Studio)",
-        "type": bool,
-    },
+    {"name": "local", "nickname": "l", "help_text": "run the language model locally (experimental)", "type": bool},
     {
         "name": "auto_run",
         "nickname": "y",
-        "help_text": "automatically run generated code",
+        "help_text": "automatically run the interpreter",
         "type": bool,
     },
     {
@@ -35,15 +29,9 @@ arguments = [
         "type": bool,
     },
     {
-        "name": "disable_procedures",
-        "nickname": "dp",
-        "help_text": "disables procedures (RAG of some common OI use-cases). disable to shrink system message. auto-disabled for non-OpenAI models",
-        "type": bool,
-    },
-    {
         "name": "model",
         "nickname": "m",
-        "help_text": "language model to use",
+        "help_text": "model to use for the language model",
         "type": str,
     },
     {
@@ -62,12 +50,6 @@ arguments = [
         "name": "max_tokens",
         "nickname": "x",
         "help_text": "optional maximum number of tokens for the language model",
-        "type": int,
-    },
-    {
-        "name": "max_output",
-        "nickname": "xo",
-        "help_text": "optional maximum number of characters for code outputs",
         "type": int,
     },
     {
@@ -94,19 +76,18 @@ arguments = [
         "help_text": "optionally enable safety mechanisms like code scanning; valid options are off, ask, and auto",
         "type": str,
         "choices": ["off", "ask", "auto"],
-        "default": "off",
+    },
+    {
+        "name": "gguf_quality",
+        "nickname": "q",
+        "help_text": "(experimental) value from 0-1 which will select the gguf quality/quantization level. lower = smaller, faster, more quantized",
+        "type": float,
     },
     {
         "name": "config_file",
         "nickname": "cf",
         "help_text": "optionally set a custom config file to use",
         "type": str,
-    },
-    {
-        "name": "vision",
-        "nickname": "v",
-        "help_text": "experimentally use vision for supported languages (HTML)",
-        "type": bool,
     },
 ]
 
@@ -157,7 +138,7 @@ def cli(interpreter):
         "--fast",
         dest="fast",
         action="store_true",
-        help="run `interpreter --model gpt-3.5-turbo`",
+        help="(deprecated) runs `interpreter --model gpt-3.5-turbo`",
     )
     parser.add_argument(
         "--version",
@@ -165,6 +146,15 @@ def cli(interpreter):
         action="store_true",
         help="get Open Interpreter's version number",
     )
+    parser.add_argument(
+        '--change_local_device',
+        dest='change_local_device',
+        action='store_true',
+        help="change the device used for local execution (if GPU fails, will use CPU)"
+    )
+
+    # TODO: Implement model explorer
+    # parser.add_argument('--models', dest='models', action='store_true', help='list avaliable models')
 
     args = parser.parse_args()
 
@@ -192,37 +182,13 @@ def cli(interpreter):
                 subprocess.call(["open", config_file])
         return
 
-    if args.local:
-        # Default local (LM studio) attributes
-        interpreter.system_message = "You are an AI."
-        interpreter.model = (
-            "openai/" + interpreter.model
-        )  # This tells LiteLLM it's an OpenAI compatible server
-        interpreter.api_base = "http://localhost:1234/v1"
-        interpreter.max_tokens = 1000
-        interpreter.context_window = 3000
-        interpreter.api_key = "0"
-
-        display_markdown_message(
-            """
-> Open Interpreter's local mode is powered by **`LM Studio`**.
-
-
-You will need to run **LM Studio** in the background.
-
-1. Download **LM Studio** from [https://lmstudio.ai/](https://lmstudio.ai/) then start it.
-2. Select a language model then click **Download**.
-3. Click the **<->** button on the left (below the chat button).
-4. Select your model at the top, then click **Start Server**.
-
-
-Once the server is running, you can begin your conversation below.
-
-> **Warning:** This feature is highly experimental.
-> Don't expect `gpt-3.5` / `gpt-4` level quality, speed, or reliability yet!
-
-"""
-        )
+    # TODO Implement model explorer
+    """
+    # If --models is used, list models
+    if args.models:
+        # If they pick a model, set model to that then proceed
+        args.model = model_explorer()
+    """
 
     # Set attributes on interpreter
     for attr_name, attr_value in vars(args).items():
@@ -237,10 +203,13 @@ Once the server is running, you can begin your conversation below.
                 setattr(interpreter, attr_name, attr_value)
 
     # if safe_mode and auto_run are enabled, safe_mode disables auto_run
-    if interpreter.auto_run and (
-        interpreter.safe_mode == "ask" or interpreter.safe_mode == "auto"
-    ):
+    if interpreter.auto_run and not interpreter.safe_mode == "off":
         setattr(interpreter, "auto_run", False)
+
+    # Default to Mistral if --local is on but --model is unset
+    if interpreter.local and args.model is None:
+        # This will cause the terminal_interface to walk the user through setting up a local LLM
+        interpreter.model = ""
 
     # If --conversations is used, run conversation_navigator
     if args.conversations:
@@ -252,17 +221,34 @@ Once the server is running, you can begin your conversation below.
         print(f"Open Interpreter {version}")
         return
 
+    if args.change_local_device:
+        print("This will uninstall the experimental local LLM interface (Ooba) in order to reinstall it for a new local device. Proceed? (y/n)")
+        if input().lower() == "n":
+            return
+
+        print("Please choose your GPU:\n")
+
+        print("A) NVIDIA")
+        print("B) AMD (Linux/MacOS only. Requires ROCm SDK 5.4.2/5.4.3 on Linux)")
+        print("C) Apple M Series")
+        print("D) Intel Arc (IPEX)")
+        print("N) None (I want to run models in CPU mode)\n")
+
+        gpu_choice = input("> ").upper()
+
+        while gpu_choice not in 'ABCDN':
+            print("Invalid choice. Please try again.")
+            gpu_choice = input("> ").upper()
+
+        ooba.install(force_reinstall=True, gpu_choice=gpu_choice, verbose=args.debug_mode)
+        return
+
+    # Deprecated --fast
     if args.fast:
+        # This will cause the terminal_interface to walk the user through setting up a local LLM
         interpreter.model = "gpt-3.5-turbo"
-
-    if args.vision:
-        interpreter.vision = True
-        interpreter.model = "gpt-4-vision-preview"
-        interpreter.system_message += "\nThe user will show you an image of the code you write. You can view images directly. Be sure to actually write a markdown code block for almost every user request! Almost EVERY message should include a markdown code block. Do not end your message prematurely!\n\nFor HTML: This will be run STATELESSLY. You may NEVER write '<!-- previous code here... --!>' or `<!-- header will go here -->` or anything like that. It is CRITICAL TO NEVER WRITE PLACEHOLDERS. Placeholders will BREAK it. You must write the FULL HTML CODE EVERY TIME. Therefore you cannot write HTML piecemeal—write all the HTML, CSS, and possibly Javascript **in one step, in one code block**. The user will help you review it visually.\nIf the user submits a filepath, you will also see the image. The filepath and user image will both be in the user's message."
-        interpreter.function_calling_llm = False
-        interpreter.context_window = 110000
-        interpreter.max_tokens = 4096
-
-        display_markdown_message("> `Vision` enabled **(experimental)**\n")
+        print(
+            "`interpreter --fast` is deprecated and will be removed in the next version. Please use `interpreter --model gpt-3.5-turbo`"
+        )
 
     interpreter.chat()

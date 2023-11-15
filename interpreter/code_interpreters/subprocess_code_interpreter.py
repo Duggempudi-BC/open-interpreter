@@ -1,12 +1,11 @@
-import os
-import queue
+
+
 import subprocess
 import threading
+import queue
 import time
 import traceback
-
 from .base_code_interpreter import BaseCodeInterpreter
-
 
 class SubprocessCodeInterpreter(BaseCodeInterpreter):
     def __init__(self):
@@ -18,13 +17,13 @@ class SubprocessCodeInterpreter(BaseCodeInterpreter):
 
     def detect_active_line(self, line):
         return None
-
+    
     def detect_end_of_execution(self, line):
         return None
-
+    
     def line_postprocessor(self, line):
         return line
-
+    
     def preprocess_code(self, code):
         """
         This needs to insert an end_of_execution marker of some kind,
@@ -33,38 +32,27 @@ class SubprocessCodeInterpreter(BaseCodeInterpreter):
         Optionally, add active line markers for detect_active_line.
         """
         return code
-
+    
     def terminate(self):
         self.process.terminate()
-        self.process.stdin.close()
-        self.process.stdout.close()
 
     def start_process(self):
         if self.process:
             self.terminate()
 
-        my_env = os.environ.copy()
-        my_env["PYTHONIOENCODING"] = "utf-8"
-        self.process = subprocess.Popen(
-            self.start_cmd.split(),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=0,
-            universal_newlines=True,
-            env=my_env,
-        )
-        threading.Thread(
-            target=self.handle_stream_output,
-            args=(self.process.stdout, False),
-            daemon=True,
-        ).start()
-        threading.Thread(
-            target=self.handle_stream_output,
-            args=(self.process.stderr, True),
-            daemon=True,
-        ).start()
+        self.process = subprocess.Popen(self.start_cmd.split(),
+                                        stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE,
+                                        text=True,
+                                        bufsize=0,
+                                        universal_newlines=True)
+        threading.Thread(target=self.handle_stream_output,
+                            args=(self.process.stdout, False),
+                            daemon=True).start()
+        threading.Thread(target=self.handle_stream_output,
+                            args=(self.process.stderr, True),
+                            daemon=True).start()
 
     def run(self, code):
         retry_count = 0
@@ -78,10 +66,11 @@ class SubprocessCodeInterpreter(BaseCodeInterpreter):
         except:
             yield {"output": traceback.format_exc()}
             return
+            
 
         while retry_count <= max_retries:
             if self.debug_mode:
-                print(f"(after processing) Running processed code:\n{code}\n---")
+                print(f"Running code:\n{code}\n---")
 
             self.done.clear()
 
@@ -124,19 +113,21 @@ class SubprocessCodeInterpreter(BaseCodeInterpreter):
                     break
 
     def handle_stream_output(self, stream, is_error_stream):
-        for line in iter(stream.readline, ""):
+        for line in iter(stream.readline, ''):
             if self.debug_mode:
                 print(f"Received output line:\n{line}\n---")
 
             line = self.line_postprocessor(line)
 
             if line is None:
-                continue  # `line = None` is the postprocessor's signal to discard completely
+                continue # `line = None` is the postprocessor's signal to discard completely
 
             if self.detect_active_line(line):
                 active_line = self.detect_active_line(line)
                 self.output_queue.put({"active_line": active_line})
             elif self.detect_end_of_execution(line):
+                self.output_queue.put({"active_line": None})
+                time.sleep(0.1)
                 self.done.set()
             elif is_error_stream and "KeyboardInterrupt" in line:
                 self.output_queue.put({"output": "KeyboardInterrupt"})
@@ -144,3 +135,4 @@ class SubprocessCodeInterpreter(BaseCodeInterpreter):
                 self.done.set()
             else:
                 self.output_queue.put({"output": line})
+
